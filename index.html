@@ -95,6 +95,7 @@
                     <div class="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 opacity-50 group-hover:opacity-100 transition-opacity duration-500"></div>
                     <span class="text-slate-400 text-xs font-bold mb-1 tracking-widest relative z-10">SCORE</span>
                     <span id="score-display" class="text-3xl sm:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-slate-300 relative z-10 tabular-nums drop-shadow-md">0</span>
+                    <span id="combo-display" class="absolute bottom-1 md:bottom-2 text-pink-500 font-black text-xs md:text-sm opacity-0 transition-opacity duration-200 z-10 drop-shadow-md">COMBO x1</span>
                 </div>
 
                 <!-- NEXT フルーツ -->
@@ -240,8 +241,15 @@
 
         // --- ゲーム状態 ---
         let score = 0;
+        let combo = 1;
+        let lastDropTime = 0;
+        let comboTimer = null;
         let isGameOver = false;
         let canDrop = true;
+        let mergeMissCount = 0;
+        let hasMergedSinceLastDrop = true;
+        const PENALTY_THRESHOLD = 3;
+        const PENALTY_SCORE = 50;
         let currentFruitType = getRandomStartFruit();
         let nextFruitType = getRandomStartFruit();
         let dropX = CANVAS_WIDTH / 2;
@@ -291,13 +299,33 @@
 
         // --- 入力制御 ---
         let isTouching = false;
+        let autoDropInterval = null;
         const canvasEl = render.canvas;
         canvasEl.classList.add('cursor-crosshair');
+
+        function startAutoDrop() {
+            if (autoDropInterval) clearInterval(autoDropInterval);
+            if (canDrop && !isGameOver) dropFruit();
+            // 長押し中はこまめにドロップ可能かチェックして投下
+            autoDropInterval = setInterval(() => {
+                if (canDrop && isTouching && !isGameOver) {
+                    dropFruit();
+                }
+            }, 50);
+        }
+
+        function stopAutoDrop() {
+            if (autoDropInterval) {
+                clearInterval(autoDropInterval);
+                autoDropInterval = null;
+            }
+        }
 
         canvasEl.addEventListener('pointerdown', (e) => {
             if (isGameOver) return;
             isTouching = true;
             updateDropX(e);
+            startAutoDrop();
         });
 
         canvasEl.addEventListener('pointermove', (e) => {
@@ -309,14 +337,13 @@
 
         canvasEl.addEventListener('pointerup', (e) => {
             if (isGameOver) return;
-            if (isTouching || e.pointerType === 'mouse') {
-                isTouching = false;
-                if (canDrop) dropFruit();
-            }
+            isTouching = false;
+            stopAutoDrop();
         });
 
         canvasEl.addEventListener('pointerleave', () => {
             isTouching = false;
+            stopAutoDrop();
         });
 
         function updateDropX(e) {
@@ -339,6 +366,40 @@
 
         function dropFruit() {
             canDrop = false;
+
+            // コンボの計算をペナルティ判定より先に行う
+            const now = Date.now();
+            if (now - lastDropTime < 800) {
+                combo++;
+            } else {
+                combo = 1;
+            }
+            lastDropTime = now;
+            updateComboUI();
+
+            // 0.8秒間アクションがなければコンボリセット
+            clearTimeout(comboTimer);
+            comboTimer = setTimeout(() => {
+                combo = 1;
+                updateComboUI();
+            }, 800);
+
+            // ペナルティ判定 (前回の落下で合体があったか)
+            if (!hasMergedSinceLastDrop) {
+                mergeMissCount++;
+                if (mergeMissCount >= PENALTY_THRESHOLD) {
+                    const penaltyAmount = PENALTY_SCORE * combo; // 減点にもコンボ倍率を適用
+                    score = Math.max(0, score - penaltyAmount);
+                    showPenaltyEffect(penaltyAmount);
+                    updateScoreDisplay();
+                    mergeMissCount = 0;
+                }
+            } else {
+                mergeMissCount = 0;
+            }
+            updateMissUI();
+            hasMergedSinceLastDrop = false;
+
             const fruitDef = FRUITS[currentFruitType];
             
             if (currentFruitType > maxFruitLevelAchieved) maxFruitLevelAchieved = currentFruitType;
@@ -357,7 +418,7 @@
             nextFruitType = getRandomStartFruit();
             updateNextFruitUI();
 
-            setTimeout(() => { if (!isGameOver) canDrop = true; }, 800);
+            setTimeout(() => { if (!isGameOver) canDrop = true; }, 100);
         }
 
         Events.on(engine, 'collisionStart', (event) => {
@@ -385,7 +446,9 @@
                             newFruitsData.push({ x: midX, y: midY, level: newLevel });
                         }
                         
-                        score += SCORE_MAP[newLevel];
+                        hasMergedSinceLastDrop = true; // マージ成功フラグを立てる
+                        
+                        score += SCORE_MAP[newLevel] * combo;
                         updateScoreDisplay();
                         createParticles(midX, midY, FRUITS[bodyA.fruitLevel].color);
                     }
@@ -531,6 +594,66 @@
             setTimeout(() => { el.style.transform = 'scale(1)'; }, 150);
         }
 
+        function showPenaltyEffect(amount) {
+            const el = document.getElementById('score-display');
+            // スコアを赤くする
+            el.classList.remove('from-white', 'to-slate-300');
+            el.classList.add('from-red-500', 'to-red-700');
+            el.style.transform = 'scale(1.3) translateX(5px)';
+            
+            // マイナススコアが浮き出るエフェクト
+            const penaltyEl = document.createElement('div');
+            penaltyEl.innerText = `-${amount}`;
+            penaltyEl.className = 'absolute text-red-500 font-black text-2xl z-20 pointer-events-none drop-shadow-[0_0_8px_rgba(239,68,68,0.8)] whitespace-nowrap';
+            penaltyEl.style.top = '50%';
+            penaltyEl.style.left = '50%';
+            penaltyEl.style.transform = 'translate(-50%, -50%)';
+            el.parentElement.appendChild(penaltyEl);
+
+            requestAnimationFrame(() => {
+                penaltyEl.style.transition = 'all 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+                penaltyEl.style.transform = 'translate(-50%, -200%) scale(1.5)';
+                penaltyEl.style.opacity = '0';
+            });
+
+            setTimeout(() => {
+                // 色を元に戻す
+                el.classList.remove('from-red-500', 'to-red-700');
+                el.classList.add('from-white', 'to-slate-300');
+                el.style.transform = 'scale(1)';
+                penaltyEl.remove();
+            }, 600);
+        }
+
+        function updateMissUI() {
+            let el = document.getElementById('miss-display');
+            if (!el) {
+                el = document.createElement('span');
+                el.id = 'miss-display';
+                el.className = 'absolute top-2 right-3 text-red-500 font-black text-[10px] md:text-xs opacity-0 transition-opacity duration-200 z-10 drop-shadow-md bg-red-950/50 px-2 py-1 rounded-full border border-red-500/30';
+                document.getElementById('score-display').parentElement.appendChild(el);
+            }
+            
+            if (mergeMissCount > 0) {
+                el.innerText = `NO MERGE ${mergeMissCount}/${PENALTY_THRESHOLD}`;
+                el.style.opacity = 1;
+            } else {
+                el.style.opacity = 0;
+            }
+        }
+
+        function updateComboUI() {
+            const el = document.getElementById('combo-display');
+            if (combo > 1) {
+                el.innerText = `COMBO x${combo}`;
+                el.style.opacity = 1;
+                el.style.transform = 'scale(1.2)';
+                setTimeout(() => { el.style.transform = 'scale(1)'; }, 100);
+            } else {
+                el.style.opacity = 0;
+            }
+        }
+
         function updateNextFruitUI() {
             const nextF = FRUITS[nextFruitType];
             const display = document.getElementById('next-fruit-display');
@@ -562,6 +685,10 @@
             gameOverScreen.classList.remove('hidden');
             gameOverScreen.classList.add('flex');
 
+            clearTimeout(comboTimer);
+            combo = 1;
+            updateComboUI();
+
             // ✨ AI 評価の生成
             const evalTextEl = document.getElementById('ai-eval-text');
             const evalLoadingEl = document.getElementById('ai-eval-loading');
@@ -583,7 +710,13 @@
             Composite.remove(engine.world, bodies);
             
             score = 0;
+            combo = 1;
+            lastDropTime = 0;
+            mergeMissCount = 0;
+            hasMergedSinceLastDrop = true;
             updateScoreDisplay();
+            updateComboUI();
+            updateMissUI();
             isGameOver = false;
             overflowCount = 0;
             particles = [];

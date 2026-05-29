@@ -27,10 +27,19 @@
         #game-container canvas {
             display: block;
             max-width: 100%;
+            max-height: 60vh; /* スマホやプレビュー環境で下端が見えるように高さを制限 */
+            width: auto;      /* アスペクト比を維持 */
             height: auto;
+            margin: 0 auto;   /* 中央揃え */
             touch-action: none;
             outline: none;
             box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.8);
+        }
+
+        @media (min-width: 768px) {
+            #game-container canvas {
+                max-height: 85vh; /* PC画面では少し大きく表示 */
+            }
         }
 
         /* 読み込み中のアニメーション用 */
@@ -248,7 +257,7 @@
         let canDrop = true;
         let mergeMissCount = 0;
         let hasMergedSinceLastDrop = true;
-        const PENALTY_THRESHOLD = 3;
+        const PENALTY_THRESHOLD = 2;
         const PENALTY_SCORE = 50;
         let currentFruitType = getRandomStartFruit();
         let nextFruitType = getRandomStartFruit();
@@ -421,16 +430,23 @@
             setTimeout(() => { if (!isGameOver) canDrop = true; }, 100);
         }
 
-        Events.on(engine, 'collisionStart', (event) => {
+        Events.on(engine, 'collisionStart collisionActive', (event) => {
             const pairs = event.pairs;
             const bodiesToRemove = new Set();
             const newFruitsData = [];
+            let triggerWatermelonExplosion = false;
+            let explosionX = 0, explosionY = 0;
 
             pairs.forEach((pair) => {
                 const { bodyA, bodyB } = pair;
 
                 if (bodyA.fruitLevel !== undefined && bodyB.fruitLevel !== undefined) {
                     if (bodyA.fruitLevel === bodyB.fruitLevel) {
+                        // 空中合体を防ぐ: 両方のフルーツが一定以上の速度(落下中・飛翔中)の場合はマージを保留
+                        if (bodyA.speed > 1.5 && bodyB.speed > 1.5) {
+                            return;
+                        }
+
                         if (bodiesToRemove.has(bodyA.id) || bodiesToRemove.has(bodyB.id)) return;
 
                         const newLevel = bodyA.fruitLevel + 1;
@@ -442,18 +458,38 @@
                         const midX = (bodyA.position.x + bodyB.position.x) / 2;
                         const midY = (bodyA.position.y + bodyB.position.y) / 2;
 
-                        if (newLevel < FRUITS.length) {
+                        if (newLevel === 10) { // 🍉 スイカ完成！爆発フラグを立てる
+                            triggerWatermelonExplosion = true;
+                            explosionX = midX;
+                            explosionY = midY;
+                            score += 10000 * combo; // スイカ爆発特大ボーナス
+                        } else if (newLevel < FRUITS.length) {
                             newFruitsData.push({ x: midX, y: midY, level: newLevel });
+                            score += SCORE_MAP[newLevel] * combo;
                         }
                         
                         hasMergedSinceLastDrop = true; // マージ成功フラグを立てる
                         
-                        score += SCORE_MAP[newLevel] * combo;
                         updateScoreDisplay();
                         createParticles(midX, midY, FRUITS[bodyA.fruitLevel].color);
                     }
                 }
             });
+
+            if (triggerWatermelonExplosion) {
+                // 盤面上の全フルーツを削除リストに追加
+                const allBodies = Composite.allBodies(engine.world);
+                allBodies.forEach(b => {
+                    if (b.fruitLevel !== undefined) {
+                        bodiesToRemove.add(b.id);
+                    }
+                });
+                
+                // 大爆発エフェクトを発生
+                createExplosionParticles(explosionX, explosionY);
+                // 新しいフルーツ（スイカ自体）は残さず吹き飛ばす
+                newFruitsData.length = 0; 
+            }
 
             if (bodiesToRemove.size > 0) {
                 const bodies = Composite.allBodies(engine.world).filter(b => bodiesToRemove.has(b.id));
@@ -570,7 +606,7 @@
                 p.x += p.vx;
                 p.y += p.vy;
                 p.vy += 0.1;
-                p.alpha -= 0.03;
+                p.alpha -= (p.decay || 0.03); // 減衰率を個別に設定できるように修正
                 
                 if (p.alpha <= 0) {
                     particles.splice(i, 1);
@@ -675,6 +711,52 @@
                     color: color, alpha: 1
                 });
             }
+        }
+
+        // --- スイカ大爆発エフェクト ---
+        function createExplosionParticles(x, y) {
+            // スイカカラーの大爆発パーティクル
+            for (let i = 0; i < 120; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 20 + 5;
+                const colors = ['#228b22', '#ff0000', '#111111', '#ffffff']; // 緑、赤、黒（種）、白
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                particles.push({
+                    x: x, y: y,
+                    vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+                    radius: Math.random() * 8 + 3,
+                    color: color, 
+                    alpha: 1,
+                    decay: Math.random() * 0.02 + 0.005
+                });
+            }
+
+            // 画面フラッシュ演出
+            const wrapper = document.getElementById('container-wrapper');
+            const flashEl = document.createElement('div');
+            flashEl.className = 'absolute inset-0 bg-white z-40 pointer-events-none transition-opacity duration-1000';
+            flashEl.style.opacity = '0.9';
+            wrapper.appendChild(flashEl);
+
+            // メッセージ演出
+            const msgEl = document.createElement('div');
+            msgEl.innerHTML = '🍉 WATERMELON<br>EXPLOSION! 🍉';
+            msgEl.className = 'absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-4xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-green-400 via-white to-red-500 z-50 pointer-events-none drop-shadow-[0_0_20px_rgba(255,255,255,1)] text-center leading-tight whitespace-nowrap';
+            wrapper.appendChild(msgEl);
+
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    flashEl.style.opacity = '0';
+                    msgEl.style.transition = 'all 1.5s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+                    msgEl.style.transform = 'translate(-50%, -150%) scale(1.2)';
+                    msgEl.style.opacity = '0';
+                }, 50);
+            });
+
+            setTimeout(() => {
+                flashEl.remove();
+                msgEl.remove();
+            }, 1600);
         }
 
         async function triggerGameOver() {

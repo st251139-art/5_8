@@ -6,6 +6,7 @@
     <title>Watermelon Merge Game</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap');
         
@@ -247,7 +248,25 @@
         let dropX = CANVAS_WIDTH / 2;
         let overflowCount = 0;
         let particles = [];
+        let floatingScores = [];
         let maxFruitLevelAchieved = 0;
+        let toneStarted = false;
+
+        // --- Tone.js サウンド設定 ---
+        const dropSynth = new Tone.MembraneSynth().toDestination();
+        const mergeSynth = new Tone.PolySynth(Tone.Synth).toDestination();
+        mergeSynth.set({
+            oscillator: { type: "triangle" },
+            envelope: { attack: 0.01, decay: 0.3, sustain: 0.1, release: 0.8 }
+        });
+        const gameOverSynth = new Tone.FMSynth().toDestination();
+
+        function initTone() {
+            if (!toneStarted) {
+                Tone.start();
+                toneStarted = true;
+            }
+        }
 
         // --- Matter.js セットアップ ---
         const Engine = Matter.Engine,
@@ -273,8 +292,8 @@
         const wallOptions = { 
             isStatic: true, 
             render: { fillStyle: '#1e293b' },
-            friction: 0.3,
-            restitution: 0.2
+            friction: 0.8,
+            restitution: 0.05
         };
         const thick = 60;
         const floor = Bodies.rectangle(CANVAS_WIDTH / 2, CANVAS_HEIGHT + thick / 2, CANVAS_WIDTH + thick * 2, thick, wallOptions);
@@ -295,6 +314,7 @@
         canvasEl.classList.add('cursor-crosshair');
 
         canvasEl.addEventListener('pointerdown', (e) => {
+            initTone();
             if (isGameOver) return;
             isTouching = true;
             updateDropX(e);
@@ -345,13 +365,15 @@
 
             const fruit = Bodies.circle(dropX, 40, fruitDef.radius, {
                 render: { fillStyle: fruitDef.color },
-                restitution: 0.2,
-                friction: 0.1,
-                density: 0.001 * (currentFruitType + 1),
+                restitution: 0.05,
+                friction: 0.5,
+                density: 0.002 * (currentFruitType + 1),
                 fruitLevel: currentFruitType
             });
             
             Composite.add(engine.world, fruit);
+
+            if (toneStarted) dropSynth.triggerAttackRelease("C3", "16n");
 
             currentFruitType = nextFruitType;
             nextFruitType = getRandomStartFruit();
@@ -385,9 +407,17 @@
                             newFruitsData.push({ x: midX, y: midY, level: newLevel });
                         }
                         
-                        score += SCORE_MAP[newLevel];
+                        const gainedScore = SCORE_MAP[newLevel];
+                        score += gainedScore;
                         updateScoreDisplay();
                         createParticles(midX, midY, FRUITS[bodyA.fruitLevel].color);
+                        floatingScores.push({ x: midX, y: midY, text: `+${gainedScore}`, alpha: 1, scale: 1 });
+                        
+                        if (toneStarted) {
+                            const notes = ["C4", "D4", "E4", "G4", "A4", "C5", "D5", "E5", "G5", "A5", "C6"];
+                            const note = notes[Math.min(newLevel, notes.length - 1)];
+                            mergeSynth.triggerAttackRelease([note, Tone.Frequency(note).transpose(7)], "8n");
+                        }
                     }
                 }
             });
@@ -400,12 +430,12 @@
                     const def = FRUITS[data.level];
                     const newFruit = Bodies.circle(data.x, data.y, def.radius, {
                         render: { fillStyle: def.color },
-                        restitution: 0.1,
-                        friction: 0.2,
-                        density: 0.001 * (data.level + 1),
+                        restitution: 0.05,
+                        friction: 0.5,
+                        density: 0.002 * (data.level + 1),
                         fruitLevel: data.level
                     });
-                    Matter.Body.setVelocity(newFruit, { x: (Math.random()-0.5), y: -2 });
+                    Matter.Body.setVelocity(newFruit, { x: (Math.random()-0.5), y: -1 });
                     Composite.add(engine.world, newFruit);
                 });
             }
@@ -506,8 +536,8 @@
                 let p = particles[i];
                 p.x += p.vx;
                 p.y += p.vy;
-                p.vy += 0.1;
-                p.alpha -= 0.03;
+                p.vy += 0.15;
+                p.alpha -= 0.02;
                 
                 if (p.alpha <= 0) {
                     particles.splice(i, 1);
@@ -520,6 +550,30 @@
                 ctx.globalAlpha = p.alpha;
                 ctx.fill();
             }
+
+            // フローティングスコアの描画
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            for (let i = floatingScores.length - 1; i >= 0; i--) {
+                let fs = floatingScores[i];
+                fs.y -= 1.5;
+                fs.alpha -= 0.02;
+                fs.scale += 0.02;
+                
+                if (fs.alpha <= 0) {
+                    floatingScores.splice(i, 1);
+                    continue;
+                }
+                
+                ctx.globalAlpha = Math.max(0, fs.alpha);
+                ctx.font = `900 ${20 * fs.scale}px 'Nunito'`;
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
+                ctx.strokeText(fs.text, fs.x, fs.y);
+                ctx.fillStyle = "#fbbf24"; // Tailwindのamber-400相当
+                ctx.fillText(fs.text, fs.x, fs.y);
+            }
+
             ctx.globalAlpha = 1.0;
         });
 
@@ -557,6 +611,12 @@
         async function triggerGameOver() {
             isGameOver = true;
             canDrop = false;
+            
+            if (toneStarted) {
+                gameOverSynth.triggerAttackRelease("C2", "2n");
+                gameOverSynth.frequency.rampTo("C1", 0.5);
+            }
+
             document.getElementById('final-score').innerText = score;
             const gameOverScreen = document.getElementById('game-over');
             gameOverScreen.classList.remove('hidden');
@@ -587,6 +647,7 @@
             isGameOver = false;
             overflowCount = 0;
             particles = [];
+            floatingScores = [];
             maxFruitLevelAchieved = 0;
             currentFruitType = getRandomStartFruit();
             nextFruitType = getRandomStartFruit();
